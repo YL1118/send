@@ -1,98 +1,62 @@
-| 論文 / 方法 | 核心 idea / 應用場景 | 與 “label embedding + 分類” 的關聯 | 優勢 / 潛在局限 |  |
-| --- | --- | --- | --- | --- |
-| **GILE: A Generalized Input-Label Embedding for Text Classification** | 為文本分類設計一個更通用的輸入-標籤聯合空間層（input-label embedding） | 標籤不再是 one-hot，而是嵌入並與文本一起映射到共同空間作分類決策。([direct.mit.edu](https://direct.mit.edu/tacl/article/doi/10.1162/tacl_a_00259/43491/GILE-A-Generalized-Input-Label-Embedding-for-Text?utm_source=chatgpt.com)) | 優於只用 one-hot 的方法，對 unseen labels 有更好的泛化能力；但模型複雜度與調參空間增大。([direct.mit.edu](https://direct.mit.edu/tacl/article/doi/10.1162/tacl_a_00259/43491/GILE-A-Generalized-Input-Label-Embedding-for-Text?utm_source=chatgpt.com)) |  |
-| **Fusing Label Embedding into BERT: An Efficient Improvement for Text Classification** | 在 BERT 的分類頭中融入 label embedding | 將標籤嵌入加入 BERT 類別頭，使得 BERT 的輸出更加 “aware” 標籤語義。([ACL Anthology](https://aclanthology.org/2021.findings-acl.152/?utm_source=chatgpt.com)) | 能提升分類效果（尤其在類別多或語義相近情況下），引入標籤語義信息；但可能引入額外參數與計算開銷。([ACL Anthology](https://aclanthology.org/2021.findings-acl.152/?utm_source=chatgpt.com)) |  |
-| **LEKA: Multi-label text classification combining label embedding and knowledge-aware** | 在多標籤情境下，結合標籤嵌入與知識圖譜 | 標籤嵌入 + 外部知識圖譜擴充 + 注意力交互 ≒ label embedding 加強語義能力。([jns.nju.edu.cn](https://jns.nju.edu.cn/EN/abstract/article/0469-5097/1504?utm_source=chatgpt.com)) | 為標籤引入知識圖譜知識，有利於語義擴展及消歧；但需要外部知識來源、知識匹配成本。([jns.nju.edu.cn](https://jns.nju.edu.cn/EN/abstract/article/0469-5097/1504?utm_source=chatgpt.com)) |  |
-| **A Multi-task Text Classification Model Based on Label Embedding Learning** | 多任務分類情境 | 用 label embedding 學習不同任務的共同與特定特徵，再用 attention 給詞權重。([SpringerLink](https://link.springer.com/chapter/10.1007/978-981-16-9229-1_13?utm_source=chatgpt.com)) | 有利於任務間遷移與共享；但任務異質差異大時可能難以平衡共享與特化。([SpringerLink](https://link.springer.com/chapter/10.1007/978-981-16-9229-1_13?utm_source=chatgpt.com)) |  |
-| **Integrating Label Semantic Similarity Scores into Multi-label Text Classification** | 多標籤任務中融合標籤間語義相似度資訊 | 預測時除了原本模型的得分，還引入 label embedding 相似度作為加分／調整。([SpringerLink](https://link.springer.com/chapter/10.1007/978-3-031-15931-2_20?utm_source=chatgpt.com)) | 能緩和那些語義相近標籤間的混淆；但如何加權融合、避免噪音引入，是設計細節較敏感的一環。([SpringerLink](https://link.springer.com/chapter/10.1007/978-3-031-15931-2_20?utm_source=chatgpt.com)) |  |
-| **A Label Embedding Method for Multi-label Classification via Exploiting Local Label Correlations** | 多標籤分類中強化標籤間的局部相關性 | 標籤嵌入時刻意考慮鄰近標籤（語義上或共現上）之間的關係，用作 embedding 正則或相互約束。([SpringerLink](https://link.springer.com/chapter/10.1007/978-3-030-36802-9_19?utm_source=chatgpt.com)) | 有助於捕捉標籤共現／關係性，不只是單標籤語義；但若標籤間關係錯誤或數據稀疏可能帶來干擾。([SpringerLink](https://link.springer.com/chapter/10.1007/978-3-030-36802-9_19?utm_source=chatgpt.com)) |  |
+任務：從 OCR 後的中文公文文字中抽取 2 個欄位：
+1) 函查對象姓名與其身分證字號
+2) 來函機關名稱
+只輸出 JSON，禁止多餘文字。
 
-| 論文 / 題目 | 年份 / 出處 | 核心創新 / 貢獻 | 為什麼值得看 |
-| --- | --- | --- | --- |
-| **Label Supervised Contrastive Learning for Imbalanced Text Classification** | 2024 (WNUT 2024) | 提出把 **標籤 embedding** 當作對比學習 (contrastive learning) 的 **錨點 (anchor)**，讓文本向量向正確標籤 embedding 靠攏、與其他標籤遠離。還在歐幾里得空間與超球空間／雙曲空間做比較。 ([ACL Anthology](https://aclanthology.org/2024.wnut-1.6/?utm_source=chatgpt.com)) | 它直接把標籤 embedding 融入對比式訓練，是一種較新穎的路徑。特別是當資料不平衡時，這策略有不錯潛力。 |
-| **Enhanced Text Classification with Label-Aware Graph Convolutional Networks (LaGCN)** | 2024 | 在文本分類任務中加入 **label-aware nodes**，在圖模型中不只是 document–word–詞邊關係，也加入 word–class、document–class 的關係。 ([MDPI](https://www.mdpi.com/2079-9292/13/15/2944?utm_source=chatgpt.com)) | 融合 GNN + label embedding 的思路，強調類別資訊與詞／文件的交互融合。對標籤-詞關係建模有幫助。 |
-| **Innovative Label Embedding for Food Safety Comment Classification: Fusion of Self-Semantic and Self-Knowledge Features** | 2024 | 在具體應用領域（食品安全評論分類）裡，把標籤描述詞語抽取出來作為 label embedding 的語義特徵，再和文本語義融合。相比只用 one-hot 或簡單 embedding 有提升。 ([hightechjournal.org](https://hightechjournal.org/index.php/HIJ/article/view/512?utm_source=chatgpt.com)) | 雖是應用導向，但提供了“在實際領域裡如何選擇 label 描述詞、如何融合” 的操作手法參考。 |
-| **Fusing Label Embedding into BERT: An Efficient Improvement for Text Classification** | 2021 | 把標籤 embedding 融入 BERT 分類頭中，使模型不只是從文本學語義，還能在分類時參照標籤語義。 ([ACL Anthology](https://aclanthology.org/2021.findings-acl.152/?utm_source=chatgpt.com)) | 雖然不是最新的，但在現代大型語言模型背景下，這種「把 label embedding 混入預訓練模型輸出頭」的方式具備可操作性。 |
-| **GILE: A Generalized Input-Label Embedding for Text Classification** | 最新（近幾年） | （我先前提過）設計通用的 input–label 聯合嵌入層，讓既能處理標籤語義也能兼容 unseen label。 | 在 label embedding 路線中是一條比較理論與實務都兼顧的路徑。 |
+【同義標籤】
+- 函查對象：函查對象、被查詢人、查詢對象、受查人、受文者（若同時出現收件人/受文者欄，優先含「查/函查」語義者）
+- 身分證字號：身分證字號、身分證統一編號、身分證、ID
+- 來函機關：來函機關、來文機關、發文機關、申請機關、機關（含××局/××署/××處/××分局/××分行）
 
-# A. 以「標籤語義/描述」增強的分類
+【規則化】
+- 轉半形；移除多餘空白與換行；保留中文。
+- 常見 OCR 修正映射：O→0、I/l→1、S→5、B→8（僅用於身分證字號）。
+- 身分證格式檢核：^[A-Z][12]\d{8}$ 不符則輸出 null。
 
-- **Label Semantic Aware Pre-training (LSAP)** — *ACL 2022*
-    
-    把**標籤名稱/語義**在預訓練階段就灌進去（以 T5 為例），few-shot 提升明顯；文內還提供公開程式碼。([arXiv](https://arxiv.org/abs/2204.07128?utm_source=chatgpt.com))
-    
-    為何值得看：你有多任務/少樣本場景時，這是把「標籤語義」提前變成能力的成熟方案。
-    
-- **Label-Description Training for Zero-Shot Text Classification** — *arXiv 2023 (v2 2023-10)*
-    
-    不用標註語料，改蒐集**標籤的簡短文字描述**做微調資料，zero-shot 準確率可大幅提升。([arXiv](https://arxiv.org/abs/2305.02239?utm_source=chatgpt.com))
-    
-    為何值得看：當你標籤多、資料稀時，這是最便宜的增益路徑。
-    
-- **DELE: Description-Enhanced Label Embedding + 對比學習** — *arXiv 2023*
-    
-    用 WordNet 的**多面向標籤描述**建 label embedding，再用**雙向互動 + 對比學習**去除噪音、拉近「正確文本-標籤」。([arXiv](https://arxiv.org/abs/2306.08817?utm_source=chatgpt.com))
-    
-    為何值得看：你前面就問過 DELE；這篇把「描述噪音」這個痛點處理得比較完整。
-    
+【抽取策略（優先序）】
+A. 標籤就近原則：在標籤同行或下一行內尋找值；若多人名同現，優先同行>下一行。
+B. 區塊優先：標題/主旨/表格區的標籤強於落款與附件。
+C. 衝突解：依序選擇 標籤語義最強（包含「查」字）> 與標籤距離最近 > 最先出現。
+D. 來函機關取最完整名稱（含上級+分支，如「臺北市政府警察局大安分局」）。
 
-# B. 以「對比學習」把文本對齊到標籤空間
+【輸出 JSON Schema】
+{
+  "queryee_name": string|null,
+  "queryee_id": string|null,
+  "agency_name": string|null,
+  "evidence": [
+    {"field":"queryee_name","snippet":string},
+    {"field":"queryee_id","snippet":string},
+    {"field":"agency_name","snippet":string}
+  ]
+}
 
-- **Label-Supervised Contrastive Learning（以**label embedding**當錨）** — *WNUT 2024*
-    
-    直接把**標籤嵌入當 anchor**，在歐氏/雙曲空間做監督式對比學習，處理類別不平衡很有用。([ACL Anthology](https://aclanthology.org/2024.wnut-1.6/?utm_source=chatgpt.com))
-    
-    為何值得看：你的任務若長尾嚴重，這比「樣本當錨」更穩。
-    
-- **Contrastive Learning for MLTC（多標籤版）** — *ACL Findings 2023 + arXiv 2022*
-    
-    設計多種**多標籤適配的對比損失**（如基於 Jaccard 的正負對）；多數基線有增益。([ACL Anthology](https://aclanthology.org/2023.findings-acl.556/?utm_source=chatgpt.com))
-    
-    為何值得看：你若做多標籤，這篇提供一整套**可替換的 loss 家族**。
-    
-- **kNN + Contrastive for MLTC** — *ACL 2022 Short*
-    
-    結合檢索鄰居與對比學習，改善多標籤預測。([ACL Anthology](https://aclanthology.org/2022.acl-short.75/?utm_source=chatgpt.com))
-    
-    為何值得看：當你有大訓練庫或外部庫，這種**檢索強化**很實用。
-    
+【few-shot】
+範例1（輸入片段）：
+「來文機關：臺北市政府警察局大安分局
+ 主旨：查詢被查詢人王小明之相關紀錄
+ 身分證字號：A123456789」
+期望輸出：
+{"queryee_name":"王小明","queryee_id":"A123456789","agency_name":"臺北市政府警察局大安分局",
+ "evidence":[
+  {"field":"queryee_name","snippet":"被查詢人王小明"},
+  {"field":"queryee_id","snippet":"身分證字號：A123456789"},
+  {"field":"agency_name","snippet":"來文機關：臺北市政府警察局大安分局"}
+ ]}
 
-# C. 把「標籤」變成圖節點一起學（Label-aware GNN）
+範例2（輸入片段）：
+「申請機關：衛生福利部食品藥物管理署
+ 受文者：王大華
+ 身分證：B123456789」
+期望輸出：
+{"queryee_name":"王大華","queryee_id":"B123456789","agency_name":"衛生福利部食品藥物管理署",
+ "evidence":[
+  {"field":"queryee_name","snippet":"受文者：王大華"},
+  {"field":"queryee_id","snippet":"身分證：B123456789"},
+  {"field":"agency_name","snippet":"申請機關：衛生福利部食品藥物管理署"}
+ ]}
 
-- **LaGCN：Label-Aware Graph Convolutional Networks** — *Electronics 2024*
-    
-    在圖裡加入**label nodes**，同時建模 doc–word、word–word、**word–class** 關係，多個資料集勝過 BERT/GCN 家族。([MDPI](https://www.mdpi.com/2079-9292/13/15/2944?utm_source=chatgpt.com))
-    
-    為何值得看：當你有**標籤關聯**或想做結構化可解釋，這路線很好遷移。
-    
+【輸入】
+{OCR_TEXT}
 
-# D. 「標籤嵌入 + 外部知識/多任務」的多標籤路線
-
-- **Label Embedding + Knowledge-aware（LEKA）** — *JNU 2023*
-    
-    把**標籤嵌入**與**知識感知**結合於多標籤情境。([jns.nju.edu.cn](https://jns.nju.edu.cn/EN/10.13232/j.cnki.jnju.2023.02.010?utm_source=chatgpt.com))
-    
-    為何值得看：你的標籤若有描述/本體/術語庫，這能放大標籤語義。
-    
-- **Graph Embedding + Region Attention for MLTC** — *Jiangsu Univ. 2022*
-    
-    圖嵌入結合區域注意力做多標籤。([zzs.ujs.edu.cn](https://zzs.ujs.edu.cn/xbzkb/EN/10.3969/j.issn.1671-7775.2022.03.010?utm_source=chatgpt.com))
-    
-    為何值得看：較工程化、好落地的圖法 baseline。
-    
-- **Multi-Perspective Contrastive for MLTC（MPCM）** — *Applied Sciences 2024*
-    
-    用**多視角對比 + 標籤對齊**強化 label 表示與全域表示。([MDPI](https://www.mdpi.com/2076-3417/14/19/8650?utm_source=chatgpt.com))
-    
-    為何值得看：多標籤且標籤彼此相關時，常比單一路徑更穩。
-    
-
----
-
-## 快速落地建議（幫你省踩雷）
-
-- **少樣本 / 新增類別**：先試 **LSAP**（或「label-description 微調」），再疊 **label-supervised contrastive**。([arXiv](https://arxiv.org/abs/2204.07128?utm_source=chatgpt.com))
-- **多標籤 / 類別相關**：用 **ACL 2023 的多標籤對比損失** 或 **LaGCN**；若有本體/詞彙庫，再加 LEKA。([ACL Anthology](https://aclanthology.org/2023.findings-acl.556/?utm_source=chatgpt.com))
-- **需可解釋**：LaGCN（有 label nodes）或 DELE（雙向互動能指出對齊詞）。([MDPI](https://www.mdpi.com/2079-9292/13/15/2944?utm_source=chatgpt.com))
-
-如果你要，我可以再把上面 3–4 篇**最符合你當前任務**的，整理成「**複現清單**」：資料集、指標、訓練指令、超參建議、以及（能找到的）**官方/第三方程式碼連結**。你只要告訴我：你的語言（中/英）、是**單/多標籤**、是否**層次**、以及是否有**標籤描述/本體**。
+【僅輸出上述 JSON】
