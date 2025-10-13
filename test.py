@@ -1,171 +1,80 @@
 # ==============================
-# Configuration (tweak as needed)
+# CHG: 產生候選與分組時涵蓋 from_agency
 # ==============================
-LABELS: Dict[str, List[str]] = {
-    "name": ["姓名", "調查人", "申報人"],
-    "id_no": ["身分證字號", "身分證統一編號", "身分證", "身分證統編"],
-    "ref_date": ["調查日", "申報基準日", "查詢基準日", "查調財產基準日"],
-    "batch_id": ["本次調查名單檔"],
-    # NEW: 來函機關/發文機關常見標籤（你可再擴充）
-    "from_agency": ["來文機關","來函機關","發文機關","主(發)文機關","發文單位","來文單位","主旨機關"]
-}
+def extract_from_text(text: str, surname_txt_path: Optional[str] = None) -> Dict:
+    lines = normalize_text(text)
+    surname_singles, surname_doubles = load_surnames_from_txt(surname_txt_path) if surname_txt_path else (set(), set(DEFAULT_DOUBLE_SURNAMES))
 
-# NEW: 常見「機關/單位」結尾詞（權重高者在前）
-ORG_SUFFIXES: Tuple[str, ...] = (
-    "地方法院檢察署","地方檢察署","地方法院","高等法院","行政執行署",
-    "稅捐稽徵處","國稅局","警察局","分局","分處","分署",
-    "監理所","地政事務所","社會局","衛生局",
-    "市政府","縣政府","區公所","鄉公所","鎮公所","戶政事務所",
-    "金融監督管理委員會","經濟部","內政部","法務部","交通部","衛福部",
-    "委員會","管理處","辦公室","基金會","學校","法院","檢察署",
-    "公司","分公司","銀行","分行","保險","保險公司",
-    "大隊","隊","科","股","室","組","課","中心","機關","單位"
-)
+    label_hits = find_label_hits(lines, LABELS, max_edit=1)
+    per_field_label_presence = {f: False for f in LABELS}
+    for h in label_hits:
+        per_field_label_presence[h.field] = True
 
-# NEW: 與發文/來文語境相關關鍵詞（做 context_bonus）
-AGENCY_CONTEXT = {"發文","來文","函","字第","主旨","機關","單位","抄送"}
+    all_cands: Dict[str, List[Candidate]] = {"name": [], "id_no": [], "ref_date": [], "batch_id": [], "from_agency": []}
+    for h in label_hits:
+        cands = find_field_candidates_around_label(h.field, h, lines, surname_singles, surname_doubles)
+        all_cands[h.field].extend(cands)
 
-# ==============================
-# Utilities（補強 normalize_text 的跳脫字元）
-# ==============================
-def normalize_text(s: str) -> List[str]:
-    s = to_halfwidth(s).replace("\r\n", "\n").replace("\r", "\n")
-    lines = s.split("\n")
-    lines = [re.sub(r"[ \t　]+", " ", line) for line in lines]
-    return lines
+    # Anchor assist：若有 ID 但沒 name/agency 標籤，利用 ID 為錨點在近鄰找人名與機關
+    if all_cands["id_no"]:
+        for idc in all_cands["id_no"]:
+            for dl in range(0, MAX_DOWN_LINES + 1):
+                li = idc.line + dl
+                if li >= len(lines): break
+                # name
+                if not per_field_label_presence["name"]:
+                    for name, col in name_candidates_from_text(lines[li], surname_singles, surname_doubles):
+                        dist = distance_score(idc.col, col, li - idc.line)
+                        all_cands["name"].append(Candidate(
+                            field="name", value=name, line=li, col=col,
+                            label_line=idc.label_line, label_col=idc.label_col,
+                            source_label=idc.source_label or "(ID-anchored)",
+                            format_conf=0.7, label_conf=0.4, dir_prior=0.6, dist_score=dist, context_bonus=0.2
+                        ))
+                # agency
+                if not per_field_label_presence.get("from_agency", False):
+                    for val, col, f in agency_candidates_from_text(lines[li]):
+                        dist = distance_score(idc.col, col, li - idc.line)
+                        all_cands["from_agency"].append(Candidate(
+                            field="from_agency", value=val, line=li, col=col,
+                            label_line=idc.label_line, label_col=idc.label_col,
+                            source_label=idc.source_label or "(ID-anchored)",
+                            format_conf=f, label_conf=0.4, dir_prior=0.6, dist_score=dist, context_bonus=0.15
+                        ))
 
-# ==============================
-# NEW: 機關候選抽取
-# ==============================
-RE_CJK_BLOCK = re.compile(rf"[{CJK_RANGE}0-9A-Za-z（）()《》〈〉、．．\.\-／/]+")  # 粗抓片段
-RE_AGENCY_TIGHT = re.compile(rf"[{CJK_RANGE}A-Za-z0-9][{CJK_RANGE}A-Za-z0-9／/・\.\-（）()《》、 ]{{0,40}}(?:{'|'.join(map(re.escape, ORG_SUFFIXES))})")
+    records = group_records(all_cands)
 
-def agency_candidates_from_text(line_text: str) -> List[Tuple[str, int, float]]:
-    """
-    以結尾詞為主的機關抽取：
-    - 先抓寬鬆片段，再以 ORG_SUFFIXES 收斂
-    - 依 suffix 重要性給 format_conf 基礎分
-    回傳: [(機關名稱, 起始col, 格式信心)]
-    """
-    cands: List[Tuple[str, int, float]] = []
-    for seg in RE_CJK_BLOCK.finditer(line_text):
-        chunk = seg.group(0)
-        base_col = seg.start()
-        for m in RE_AGENCY_TIGHT.finditer(chunk):
-            val = m.group(0).strip(" 、，。:：;；")
-            if 2 <= len(val) <= 40:
-                # 根據 suffix 排名給分（越前面越高）
-                fmt = 0.6
-                for rank, suf in enumerate(ORG_SUFFIXES, start=1):
-                    if val.endswith(suf):
-                        fmt = max(fmt, 1.0 - (rank-1)/len(ORG_SUFFIXES)*0.5)  # 0.5~1.0
-                        break
-                cands.append((val, base_col + m.start(), fmt))
-    return cands
-
-# ==============================
-# NEW: 在 find_field_candidates_around_label 中支援 from_agency
-# ==============================
-def find_field_candidates_around_label(field: str, label: LabelHit, lines: List[str],
-                                       surname_singles: Set[str], surname_doubles: Set[str]) -> List[Candidate]:
-    results: List[Candidate] = []
-    label_line_text = lines[label.line]
-
-    def add_candidate(value: str, vcol: int, line: int, dir_key: str, fmt_conf: float) -> None:
-        line_delta = line - label.line
-        col_delta = abs(vcol - label.col)
-        dist = distance_score(label.col, vcol, line_delta)
-
-        # 機關允許稍遠一些，但限制過遠噪音
-        if field == "from_agency":
-            if abs(line_delta) > 2:  # 最多跨兩行
-                return
-            if dist < 0.15:
-                return
-        elif field == "name":
-            if line_delta == 0 and col_delta > 14:
-                return
-            if line_delta != 0 and col_delta > 10:
-                return
-            if abs(line_delta) > 1 or dist < 0.5:
-                return
+    report: Dict[str, List[str]] = {k: [] for k in ["name","id_no","ref_date","batch_id","from_agency"]}
+    for field in report:
+        if not per_field_label_presence.get(field, False):
+            if all_cands.get(field):
+                report[field].append("未找到標籤，但靠近其他錨點找到候選，已打分。")
+            else:
+                report[field].append("文件中未找到任何該欄位標籤（含模糊匹配）。")
         else:
-            if dist < 0.2:
-                return
+            if not all_cands.get(field):
+                report[field].append("找到了標籤，但其附近未找到符合規則的候選值。")
+            else:
+                report[field].append(f"找到了標籤與候選（共 {len(all_cands[field])} 條），已根據距離與校驗打分。")
 
-        dir_prior = DIRECTION_PRIOR.get(dir_key, 0.0)
-        # context bonus: 機關若附近有語境詞，+0.1~0.2
-        ctx_bonus = 0.0
-        if field == "from_agency":
-            window = lines[line][max(0, vcol-12): vcol+30]
-            if any(k in window for k in AGENCY_CONTEXT):
-                ctx_bonus += 0.15
-
-        results.append(Candidate(
-            field=field, value=value, line=line, col=vcol,
-            label_line=label.line, label_col=label.col, source_label=label.label_text,
-            format_conf=fmt_conf, label_conf=1.0 - min(label.distance, 1)*0.5,
-            dir_prior=dir_prior, dist_score=dist, context_bonus=ctx_bonus
-        ))
-
-    # ---- same line right/left
-    right_seg = label_line_text[label.col:label.col+80]
-    left_seg  = label_line_text[max(0, label.col-80):label.col]
-
-    if field == "from_agency":
-        for val, c, f in agency_candidates_from_text(right_seg):
-            add_candidate(val, label.col + c, label.line, "same_right", f)
-        for val, c, f in agency_candidates_from_text(left_seg):
-            add_candidate(val, c, label.line, "same_left", f)
-    elif field == "name":
-        for name, c in name_candidates_from_text(right_seg, surname_singles, surname_doubles):
-            add_candidate(name, label.col + c, label.line, "same_right", 0.8)
-        for name, c in name_candidates_from_text(left_seg, surname_singles, surname_doubles):
-            add_candidate(name, c, label.line, "same_left", 0.8)
-    elif field == "id_no":
-        for m in re.finditer(r"[A-Z][0-9]{9}|[A-Z]{2}[0-9]{8}", right_seg):
-            code = m.group(0); fmt = 1.0 if tw_id_checksum_ok(code) or arc_id_like(code) else 0.5
-            add_candidate(code, label.col + m.start(), label.line, "same_right", fmt)
-        for m in re.finditer(r"[A-Z][0-9]{9}|[A-Z]{2}[0-9]{8}", left_seg):
-            code = m.group(0); fmt = 1.0 if tw_id_checksum_ok(code) or arc_id_like(code) else 0.5
-            add_candidate(code, m.start(), label.line, "same_left", fmt)
-    elif field == "ref_date":
-        for pat in DATE_PATTERNS:
-            for m in pat.finditer(right_seg):
-                iso = parse_iso_date(m.group(0))
-                if iso: add_candidate(iso, label.col + m.start(), label.line, "same_right", 1.0)
-        for pat in DATE_PATTERNS:
-            for m in pat.finditer(left_seg):
-                iso = parse_iso_date(m.group(0))
-                if iso: add_candidate(iso, m.start(), label.line, "same_left", 1.0)
-    elif field == "batch_id":
-        for m in RE_BATCH_13.finditer(right_seg):
-            add_candidate(m.group(0), label.col + m.start(), label.line, "same_right", 0.9)
-        for m in RE_BATCH_13.finditer(left_seg):
-            add_candidate(m.group(0), m.start(), label.line, "same_left", 0.9)
-
-    # ---- lines below
-    for dl in range(1, MAX_DOWN_LINES + (1 if field=="from_agency" else 0) + 1):
-        li = label.line + dl
-        if li >= len(lines): break
-        tgt = lines[li]
-        if field == "from_agency":
-            for val, c, f in agency_candidates_from_text(tgt):
-                add_candidate(val, c, li, "below", f)
-        elif field == "name":
-            for name, c in name_candidates_from_text(tgt, surname_singles, surname_doubles):
-                add_candidate(name, c, li, "below", 0.8)
-        elif field == "id_no":
-            for m in re.finditer(r"[A-Z][0-9]{9}|[A-Z]{2}[0-9]{8}", tgt):
-                code = m.group(0); fmt = 1.0 if tw_id_checksum_ok(code) or arc_id_like(code) else 0.5
-                add_candidate(code, m.start(), li, "below", fmt)
-        elif field == "ref_date":
-            for pat in DATE_PATTERNS:
-                for m in pat.finditer(tgt):
-                    iso = parse_iso_date(m.group(0))
-                    if iso: add_candidate(iso, m.start(), li, "below", 1.0)
-        elif field == "batch_id":
-            for m in RE_BATCH_13.finditer(tgt):
-                add_candidate(m.group(0), m.start(), li, "below", 0.9)
-
-    return results
+    output = {
+        "records": [
+            {
+                "name": asdict(r.name),
+                "id_no": asdict(r.id_no),
+                "ref_date": asdict(r.ref_date),
+                "batch_id": asdict(r.batch_id),
+                # NEW: 輸出 來函機關
+                "from_agency": asdict(
+                    FieldResult(None,0.0,None,[]))  # 先填預設，稍後在 assemble_record 改
+                ,
+                "debug": r.debug,
+            } for r in records
+        ],
+        "report": report,
+        "meta": { ... }  # 省略（保留你原本內容）
+    }
+    # 將 assemble_record 產的 agency 寫回（看下方 assemble_record 改動）
+    for i, r in enumerate(records):
+        output["records"][i]["from_agency"] = asdict(r.debug.get("_from_agency_field", FieldResult(None,0.0,None,[])))
+    return output
