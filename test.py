@@ -1,84 +1,133 @@
-# ==============================
-# CHG: 分組時把機關也配對到同一筆 record
-# ==============================
-def group_records(all_cands: Dict[str, List[Candidate]]) -> List[Record]:
-    records: List[Record] = []
+# --- fixes & additions ---
 
-    def nearest(field: str, anchor: Candidate) -> Optional[Candidate]:
-        best, best_s = None, -1.0
-        for c in all_cands.get(field, []):
-            line_delta = abs(c.line - anchor.line)
-            if line_delta > MAX_DOWN_LINES + (1 if field=="from_agency" else 0):
-                continue
-            dist = distance_score(anchor.col, c.col, c.line - anchor.line)
-            s = (dist * 3.0) + (0.3 * c.format_conf) + (0.2 * c.dir_prior) + (0.2 * c.context_bonus) - (0.3 * c.penalty)
-            if s > best_s:
-                best_s, best = s, c
-        return best
+# FIX: newline normalization
+def normalize_text(s: str) -> List[str]:
+    """Normalize and split into lines, preserving line breaks.
+    - Halfwidth normalization
+    - Normalize newlines \r\n / \r -> \n
+    - Collapse spaces per line (not across lines)
+    """
+    s = to_halfwidth(s)
+    s = s.replace("\r\n", "\n").replace("\r", "\n")  # FIX
+    lines = s.split("\n")
+    lines = [re.sub(r"[ \t\u3000]+", " ", line) for line in lines]
+    return lines
 
-    id_anchors = sorted(all_cands.get("id_no", []), key=lambda c: (c.line, c.col))
-    if id_anchors:
-        for a in id_anchors:
-            name_c  = nearest("name", a)
-            date_c  = nearest("ref_date", a)
-            batch_c = nearest("batch_id", a)
-            agen_c  = nearest("from_agency", a)  # NEW
-            rec = assemble_record(name_c, a, date_c, batch_c, all_cands, agen_c)  # CHG
-            records.append(rec)
-    else:
-        for a in sorted(all_cands.get("name", []), key=lambda c: (c.line, c.col)):
-            id_c   = nearest("id_no", a)
-            date_c = nearest("ref_date", a)
-            batch_c= nearest("batch_id", a)
-            agen_c = nearest("from_agency", a)  # NEW
-            rec = assemble_record(a, id_c, date_c, batch_c, all_cands, agen_c)  # CHG
-            records.append(rec)
+# NEW: compact OCR-noisy tokens like 'A 1 2 3 . 4 5 6 7 8 9' -> 'A123456789'
+_RE_OCR_GAPS = re.compile(r"[ \u3000\.\-_/]+")
 
-    if not records:
-        empty = Record(
-            name=FieldResult(None, 0.0, None, ["未偵測到任何姓名候選或身分證號錨點"]),
-            id_no=FieldResult(None, 0.0, None, ["未偵測到任何身分證號候選"]),
-            ref_date=FieldResult(None, 0.0, None, ["未偵測到任何日期候選"]),
-            batch_id=FieldResult(None, 0.0, None, ["未偵測到任何13位名單檔候選"]),
-            debug={}
-        )
-        records.append(empty)
-    return records
+def compact_ocr_noise(s: str) -> str:
+    return _RE_OCR_GAPS.sub("", s)
 
-def assemble_record(name_c: Optional[Candidate], id_c: Optional[Candidate],
-                    date_c: Optional[Candidate], batch_c: Optional[Candidate],
-                    all_cands: Dict[str, List[Candidate]], agen_c: Optional[Candidate] = None) -> Record:
-    def field_result_from_cand(c: Optional[Candidate], fallback_notes: List[str]) -> FieldResult:
-        if c is None:
-            return FieldResult(None, 0.0, None, fallback_notes)
-        return FieldResult(
-            value=c.value,
-            confidence=max(0.0, min(1.0, c.score()/3.0)),
-            source={
-                "line": c.line, "col": c.col, "label": c.source_label,
-                "label_line": c.label_line, "label_col": c.label_col,
-                "score_breakdown": {
-                    "label_conf": c.label_conf, "format_conf": c.format_conf,
-                    "dist_score": c.dist_score, "dir_prior": c.dir_prior,
-                    "context_bonus": c.context_bonus, "penalty": c.penalty
-                }
-            },
-            notes=[],
-        )
+# FIX: ID regex to also match spaced/dotted variants, later compact
+RE_ID_TW_FUZZY = re.compile(r"[A-Z][\s.\-_/]*?(?:\d[\s.\-_/]*?){9}")
+RE_ID_ARC_FUZZY = re.compile(r"[A-Z][\s.\-_/]*?[A-Z][\s.\-_/]*?(?:\d[\s.\-_/]*?){8}")
 
-    name_notes = [] if name_c else ["找不到與標籤鄰近且符合規則的姓名候選。"]
-    id_notes   = [] if id_c   else ["找不到與標籤鄰近且符合格式/校驗的身分證號候選。"]
-    date_notes = [] if date_c else ["找不到可解析為ISO日期的候選（含民國年轉換）。"]
-    batch_notes= [] if batch_c else ["找不到13位名單檔候選。"]
-    agen_notes = [] if agen_c else ["找不到來函/發文機關候選。"]
+def tw_id_checksum_ok(code: str) -> bool:
+    code = compact_ocr_noise(code).upper()  # FIX normalize first
+    if not RE_ID_TW.fullmatch(code):
+        return False
+    n = LETTER_MAP.get(code[0])
+    if n is None:
+        return False
+    a, b = divmod(n, 10)
+    digits = [a, b] + [int(x) for x in code[1:]]
+    return sum(d*w for d, w in zip(digits, WEIGHTS_TW_ID)) % 10 == 0
 
-    rec = Record(
-        name=field_result_from_cand(name_c, name_notes),
-        id_no=field_result_from_cand(id_c, id_notes),
-        ref_date=field_result_from_cand(date_c, date_notes),
-        batch_id=field_result_from_cand(batch_c, batch_notes),
-        debug={"all_candidates_counts": {k: len(v) for k, v in all_cands.items()}}
-    )
-    # NEW: 把機關欄位塞進 debug，讓上游輸出帶出去
-    rec.debug["_from_agency_field"] = field_result_from_cand(agen_c, agen_notes)
-    return rec
+def arc_id_like(code: str) -> bool:
+    code = compact_ocr_noise(code).upper()  # FIX normalize first
+    return RE_ID_ARC.fullmatch(code) is not None
+
+# NEW: context blacklist around non-person zones (減少姓名誤擊)
+CONTEXT_BLACKLIST_NEAR = NAME_BLACKLIST_NEAR | {"傳真", "電話", "TEL", "FAX", "E-MAIL", "Email", "住址", "地址"}
+
+# FIX: name extractor now supports 1–3 given-name chars + honorific stripping
+def name_candidates_from_text(line_text: str, surname_singles: Set[str], surname_doubles: Set[str]) -> List[Tuple[str, int]]:
+    cands: List[Tuple[str,int]] = []
+    text = line_text
+    n = len(text)
+    sep_set = set(NAME_SEPARATORS)
+
+    def strip_honorific_after(end_idx: int) -> int:
+        # 跳過空白/中點後若連著敬稱，返回敬稱前位置
+        j = end_idx
+        while j < n and text[j] in sep_set:
+            j += 1
+        for hon in HONORIFICS:
+            L = len(hon)
+            if j + L <= n and text[j:j+L] == hon:
+                return j  # 砍掉敬稱
+        return end_idx
+
+    # 嘗試取 1..3 個給名：偏好 2，再 3，再 1（台灣最常見 2）
+    def next_given_after(start: int) -> List[Tuple[str, int]]:
+        j = start
+        while j < n and text[j] in sep_set:
+            j += 1
+        taken = []
+        pos = j
+        while j < n and len(taken) < NAME_GIVEN_MAX:
+            ch = text[j]
+            if RE_CJK.fullmatch(ch):
+                taken.append(ch); j += 1
+            elif text[j] in sep_set:
+                j += 1
+            else:
+                break
+        outs: List[Tuple[str,int]] = []
+        for L in (2, 3, 1):  # 偏好順序
+            if NAME_GIVEN_MIN <= L <= len(taken):
+                end = pos
+                # 找到第 L 個 CJK 的實際終點
+                cnt, k = 0, pos
+                while k < j and cnt < L:
+                    if RE_CJK.fullmatch(text[k]): cnt += 1
+                    k += 1
+                end = k
+                end = strip_honorific_after(end)
+                g = "".join(taken[:L])
+                if g and g not in BIGRAM_BLACKLIST:
+                    outs.append((g, pos, end))
+        return outs
+
+    doubles_sorted = sorted(surname_doubles, key=len, reverse=True)
+    for i in range(n):
+        matched = False
+        # 先嘗試複姓
+        for ds in doubles_sorted:
+            L = len(ds)
+            if i + L <= n and text[i:i+L] == ds:
+                for g, pos, end in next_given_after(i + L):
+                    name = ds + g
+                    cands.append((name, i))
+                matched = True
+                break
+        if matched:
+            continue
+        # 再試單姓
+        ch = text[i]
+        if ch in surname_singles:
+            for g, pos, end in next_given_after(i + 1):
+                name = ch + g
+                cands.append((name, i))
+    return cands
+
+# FIX: 在 find_field_candidates_around_label 裡替換 ID 的尋找與正規化
+# 片段（僅示意其中一處，左右/下方三個區塊都同理替換）
+# 原本:
+# for m in re.finditer(r"[A-Z][0-9]{9}|[A-Z]{2}[0-9]{8}", right_seg):
+# 改為：
+for m in re.finditer(f"(?:{RE_ID_TW_FUZZY.pattern})|(?:{RE_ID_ARC_FUZZY.pattern})", right_seg):
+    raw = m.group(0)
+    code = compact_ocr_noise(raw).upper()
+    fmt = 1.0 if tw_id_checksum_ok(code) or arc_id_like(code) else 0.5
+    add_candidate(code, label.col + m.start(), label.line, "same_right", fmt)
+
+# NEW: 降噪懲罰（在 add_candidate 之前或之後套用）
+def penalize_non_person_context(value: str, line_text: str) -> float:
+    ctx = line_text
+    for bad in CONTEXT_BLACKLIST_NEAR:
+        if bad in ctx:
+            return 0.15  # 懲罰
+    return 0.0
+# 使用：cand.penalty += penalize_non_person_context(value, lines[line])
