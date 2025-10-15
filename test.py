@@ -28,7 +28,7 @@ OCR_FIXES = [
 ]
 
 def normalize_text(text: str) -> str:
-    """OCR 文正規化"""
+    """OCR 文正規化 + 移除中文間空格"""
     t = text.replace('\ufeff', '')
     t = unicodedata.normalize('NFC', t)
     t = to_halfwidth(t)
@@ -37,6 +37,9 @@ def normalize_text(text: str) -> str:
     t = re.sub(r'[ \u00A0]+', ' ', t)  # 合併多空白
     for pat, rep in OCR_FIXES:
         t = re.sub(pat, rep, t)
+    # ⭐ 中文間空格移除（核心）
+    t = re.sub(r'(?<=\u4e00)\s+(?=\u4e00)', '', t)
+    # 清除行尾空白
     t = '\n'.join(line.rstrip() for line in t.splitlines())
     return t.strip()
 
