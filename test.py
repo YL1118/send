@@ -27,21 +27,82 @@ OCR_FIXES = [
     (r'０', '0'), (r'１', '1'), (r'Ｂ', 'B'), (r'８', '8'),
 ]
 
+import re, unicodedata, jieba
+
+# 判斷是否「廣義中文字」（基本區 + 擴展A + 相容表意 + 〇）
+def is_cjk(ch: str) -> bool:
+    code = ord(ch)
+    return (
+        0x4E00 <= code <= 0x9FFF   or  # CJK Unified Ideographs
+        0x3400 <= code <= 0x4DBF   or  # CJK Ext-A
+        0xF900 <= code <= 0xFAFF   or  # CJK Compatibility Ideographs
+        code == 0x3007                 # 〇
+    )
+
 def normalize_text(text: str) -> str:
-    """OCR 文正規化 + 移除中文間空格"""
     t = text.replace('\ufeff', '')
     t = unicodedata.normalize('NFC', t)
+
+    # 全形→半形（含全形空白）
+    def to_halfwidth(s):
+        out=[]
+        for ch in s:
+            code=ord(ch)
+            if code == 0x3000: out.append(' ')
+            elif 0xFF01 <= code <= 0xFF5E: out.append(chr(code-0xFEE0))
+            else: out.append(ch)
+        return ''.join(out)
     t = to_halfwidth(t)
-    t = t.replace('﹕', '：').replace('︰', '：').replace('⦂', '：')
-    t = t.replace('–', '-').replace('—', '-')
-    t = re.sub(r'[ \u00A0]+', ' ', t)  # 合併多空白
+
+    # 統一符號
+    t = (t.replace('﹕','：').replace('︰','：').replace('⦂','：')
+           .replace('–','-').replace('—','-'))
+
+    # 把所有「奇形空白」正規成普通空格
+    t = re.sub(r'[\u00A0\u2000-\u200A\u202F\u205F\u3000]', ' ', t)
+    # 合併連續空格
+    t = re.sub(r'[ ]+', ' ', t)
+
+    # 你的 OCR 修正表
+    OCR_FIXES = [
+        (r'主\s*旨\s*[:：﹕︰⦂]?', '主旨：'),
+        (r'說\s*明\s*[:：﹕︰⦂]?', '說明：'),
+        (r'身[分份]證', '身分證'),
+    ]
     for pat, rep in OCR_FIXES:
         t = re.sub(pat, rep, t)
-    # ⭐ 中文間空格移除（核心）
-    t = re.sub(r'(?<=\u4e00)\s+(?=\u4e00)', '', t)
-    # 清除行尾空白
+
+    # ⭐ 移除「廣義中文字」之間的空格（不影響中英/數）
+    chars = []
+    i = 0
+    while i < len(t):
+        ch = t[i]
+        if ch == ' ' and i > 0 and i+1 < len(t) and is_cjk(t[i-1]) and is_cjk(t[i+1]):
+            # 跳過這個空格
+            i += 1
+            continue
+        # 也順手清掉零寬字元
+        if ch in ('\u200b', '\u200c', '\u200d', '\ufeff'):
+            i += 1
+            continue
+        chars.append(ch)
+        i += 1
+    t = ''.join(chars)
+
+    # 每行尾端空白清理
     t = '\n'.join(line.rstrip() for line in t.splitlines())
     return t.strip()
+
+def tokenize_sections(sections: dict):
+    out = {}
+    for k, v in sections.items():
+        if not v.strip():
+            out[k] = []
+            continue
+        # jieba 分詞；過濾掉純空白 token
+        toks = [tok for tok in jieba.cut(v, cut_all=False) if tok.strip() != '']
+        out[k] = toks
+    return out
 
 # ===================== 2️⃣ 分段 =====================
 
