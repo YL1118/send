@@ -1,184 +1,68 @@
-# -*- coding: utf-8 -*-
 import re
 import unicodedata
-import jieba
 
-# ===================== 1️⃣ 正規化 =====================
-
-def to_halfwidth(s: str) -> str:
-    """全形轉半形"""
-    res = []
-    for ch in s:
-        code = ord(ch)
-        if code == 0x3000:
-            res.append(' ')
-        elif 0xFF01 <= code <= 0xFF5E:
-            res.append(chr(code - 0xFEE0))
-        else:
-            res.append(ch)
-    return ''.join(res)
-
-# 常見 OCR 誤字修正常數表，可依真實資料擴充
-OCR_FIXES = [
-    (r'主\s*旨\s*[:：﹕︰⦂]?', '主旨：'),
-    (r'說\s*明\s*[:：﹕︰⦂]?', '說明：'),
-    (r'身[分份]證', '身分證'),
-    (r'Ｏ', 'O'), (r'ｏ', 'o'),
-    (r'０', '0'), (r'１', '1'), (r'Ｂ', 'B'), (r'８', '8'),
-]
-
-import re, unicodedata, jieba
-
-# 判斷是否「廣義中文字」（基本區 + 擴展A + 相容表意 + 〇）
+# 1) 判斷廣義中文字（基本區 + Ext-A + 相容表意 + 〇）
 def is_cjk(ch: str) -> bool:
-    code = ord(ch)
-    return (
-        0x4E00 <= code <= 0x9FFF   or  # CJK Unified Ideographs
-        0x3400 <= code <= 0x4DBF   or  # CJK Ext-A
-        0xF900 <= code <= 0xFAFF   or  # CJK Compatibility Ideographs
-        code == 0x3007                 # 〇
-    )
+    o = ord(ch)
+    return (0x4E00 <= o <= 0x9FFF) or (0x3400 <= o <= 0x4DBF) or (0xF900 <= o <= 0xFAFF) or (o == 0x3007)
 
-def normalize_text(text: str) -> str:
-    t = text.replace('\ufeff', '')
-    t = unicodedata.normalize('NFC', t)
+# 2) 你原本的 normalize_text() 建議在最後再呼叫本函式做進一步清理
+PAGE_MARK_RE = re.compile(r'^\s*第\s*\d+\s*頁\s*[,，、]?\s*共\s*\d+\s*頁\s*$', re.I)
+DOTS_ONLY_RE = re.compile(r'^[\s\.\u2026\u00B7\u2027\u2219\u30FB\uFF65\u2000-\u200A\u202F\u205F\u3000]+$')  # ., …, ·, ・ 等
+LEFT_MARGIN_CHAR_RE = re.compile(r'^[\s\.\u2026\u00B7\u2027\u2219\u30FB\uFF65]*[裝訂線][\s\.\u2026\u00B7\u2027\u2219\u30FB\uFF65]*$')
 
-    # 全形→半形（含全形空白）
-    def to_halfwidth(s):
-        out=[]
-        for ch in s:
-            code=ord(ch)
-            if code == 0x3000: out.append(' ')
-            elif 0xFF01 <= code <= 0xFF5E: out.append(chr(code-0xFEE0))
-            else: out.append(ch)
-        return ''.join(out)
-    t = to_halfwidth(t)
+def remove_page_marks_and_margin_noise(text: str) -> str:
+    """
+    - 移除 '第2頁，共3頁' / '第3頁, 共3頁' 之類的分頁行，並把下一行併到上一行。
+    - 移除左側直排雜訊行（純點點或單獨的「裝/訂/線」等）。
+    """
+    # 先把奇形空白正規成普通空格（含全形空白）
+    text = text.replace('\ufeff', '')
+    text = unicodedata.normalize('NFC', text)
+    text = re.sub(r'[\u00A0\u2000-\u200A\u202F\u205F\u3000]', ' ', text)
 
-    # 統一符號
-    t = (t.replace('﹕','：').replace('︰','：').replace('⦂','：')
-           .replace('–','-').replace('—','-'))
+    lines = text.splitlines()
+    out = []
+    concat_next_to_prev = False
 
-    # 把所有「奇形空白」正規成普通空格
-    t = re.sub(r'[\u00A0\u2000-\u200A\u202F\u205F\u3000]', ' ', t)
-    # 合併連續空格
-    t = re.sub(r'[ ]+', ' ', t)
+    for i, raw in enumerate(lines):
+        line = raw.rstrip()
 
-    # 你的 OCR 修正表
-    OCR_FIXES = [
-        (r'主\s*旨\s*[:：﹕︰⦂]?', '主旨：'),
-        (r'說\s*明\s*[:：﹕︰⦂]?', '說明：'),
-        (r'身[分份]證', '身分證'),
-    ]
-    for pat, rep in OCR_FIXES:
-        t = re.sub(pat, rep, t)
+        # ① 分頁行 → 丟掉，並標記下一行要併到上一行
+        if PAGE_MARK_RE.match(line):
+            concat_next_to_prev = True
+            continue
 
-    # ⭐ 移除「廣義中文字」之間的空格（不影響中英/數）
-    chars = []
-    i = 0
-    while i < len(t):
-        ch = t[i]
-        if ch == ' ' and i > 0 and i+1 < len(t) and is_cjk(t[i-1]) and is_cjk(t[i+1]):
-            # 跳過這個空格
+        # ② 左側直排雜訊（純點點 or 單字「裝/訂/線」） → 丟掉
+        if DOTS_ONLY_RE.match(line) or LEFT_MARGIN_CHAR_RE.match(line):
+            # 這行不要；也不要觸發合併
+            continue
+
+        # ③ 真的要輸出的行
+        if concat_next_to_prev and out:
+            # 把本行併到上一行（留一個空格）
+            out[-1] = out[-1].rstrip() + ' ' + line.lstrip()
+            concat_next_to_prev = False
+        else:
+            out.append(line)
+
+    cleaned = '\n'.join(out)
+
+    # ④ 刪掉「中文字-空格-中文字」之間多餘空格（保留中英/數間空格）
+    buf, i = [], 0
+    while i < len(cleaned):
+        ch = cleaned[i]
+        if ch == ' ' and i > 0 and i + 1 < len(cleaned) and is_cjk(cleaned[i-1]) and is_cjk(cleaned[i+1]):
             i += 1
             continue
-        # 也順手清掉零寬字元
-        if ch in ('\u200b', '\u200c', '\u200d', '\ufeff'):
+        # 清掉零寬字元
+        if ch in ('\u200b', '\u200c', '\u200d'):
             i += 1
             continue
-        chars.append(ch)
+        buf.append(ch)
         i += 1
-    t = ''.join(chars)
 
-    # 每行尾端空白清理
-    t = '\n'.join(line.rstrip() for line in t.splitlines())
-    return t.strip()
-
-def tokenize_sections(sections: dict):
-    out = {}
-    for k, v in sections.items():
-        if not v.strip():
-            out[k] = []
-            continue
-        # jieba 分詞；過濾掉純空白 token
-        toks = [tok for tok in jieba.cut(v, cut_all=False) if tok.strip() != '']
-        out[k] = toks
-    return out
-
-# ===================== 2️⃣ 分段 =====================
-
-PAT_MAIN = re.compile(r'主\s*旨\s*[：:]', re.IGNORECASE)
-PAT_DESC = re.compile(r'說\s*明\s*[：:]', re.IGNORECASE)
-
-def split_sections(text: str):
-    """
-    輸入：正規化後全文
-    輸出：dict 內含三段
-    """
-    m_main = PAT_MAIN.search(text)
-    m_desc = PAT_DESC.search(text, m_main.end() if m_main else 0)
-
-    if not m_main and not m_desc:
-        return {'before_main': text, 'main_to_desc': '', 'after_desc': ''}
-
-    if m_main and not m_desc:
-        return {
-            'before_main': text[:m_main.start()],
-            'main_to_desc': text[m_main.end():],
-            'after_desc': ''
-        }
-
-    if not m_main and m_desc:
-        return {
-            'before_main': text[:m_desc.start()],
-            'main_to_desc': '',
-            'after_desc': text[m_desc.end():]
-        }
-
-    return {
-        'before_main': text[:m_main.start()],
-        'main_to_desc': text[m_main.end():m_desc.start()],
-        'after_desc': text[m_desc.end():]
-    }
-
-# ===================== 3️⃣ jieba 分詞 =====================
-
-def tokenize_sections(sections: dict):
-    """
-    對三段文字進行 jieba 分詞，回傳 dict
-    """
-    tokenized = {}
-    for key, value in sections.items():
-        if not value.strip():
-            tokenized[key] = []
-            continue
-        # 精確模式，保留標點以利規則抽取
-        tokens = [tok for tok in jieba.cut(value, cut_all=False)]
-        tokenized[key] = tokens
-    return tokenized
-
-# ===================== 4️⃣ 主流程 =====================
-
-def preprocess_and_segment(text: str):
-    norm = normalize_text(text)
-    secs = split_sections(norm)
-    toks = tokenize_sections(secs)
-    return {'normalized': norm, 'sections': secs, 'tokens': toks}
-
-# ===================== 示範 =====================
-
-if __name__ == "__main__":
-    sample = """
-    受文者：全球人壽保險股份有限公司
-    主    旨 ： 關於 貴公司 XXX 保單資料 ，請 查照。
-    說    明：一、依 ○○○ 函。
-             二、檢附清單乙份。
-    """
-    out = preprocess_and_segment(sample)
-
-    print("====== 正規化後全文 ======")
-    print(out['normalized'])
-    print("\n====== 三段切分 ======")
-    for k, v in out['sections'].items():
-        print(f"[{k}]\n{v}\n")
-    print("====== jieba 分詞結果（main_to_desc 範例）======")
-    print(out['tokens']['main_to_desc'])
+    # 合併多空白為單一空白、刪尾空白
+    final = re.sub(r'[ ]{2,}', ' ', ''.join(buf))
+    final = '\n'.join(l.rstrip() for l in final.splitlines())
+    return final.strip()
