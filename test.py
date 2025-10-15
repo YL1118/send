@@ -1,133 +1,120 @@
-# --- fixes & additions ---
+# -*- coding: utf-8 -*-
+import re
+import unicodedata
+import jieba
 
-# FIX: newline normalization
-def normalize_text(s: str) -> List[str]:
-    """Normalize and split into lines, preserving line breaks.
-    - Halfwidth normalization
-    - Normalize newlines \r\n / \r -> \n
-    - Collapse spaces per line (not across lines)
+# ===================== 1️⃣ 正規化 =====================
+
+def to_halfwidth(s: str) -> str:
+    """全形轉半形"""
+    res = []
+    for ch in s:
+        code = ord(ch)
+        if code == 0x3000:
+            res.append(' ')
+        elif 0xFF01 <= code <= 0xFF5E:
+            res.append(chr(code - 0xFEE0))
+        else:
+            res.append(ch)
+    return ''.join(res)
+
+# 常見 OCR 誤字修正常數表，可依真實資料擴充
+OCR_FIXES = [
+    (r'主\s*旨\s*[:：﹕︰⦂]?', '主旨：'),
+    (r'說\s*明\s*[:：﹕︰⦂]?', '說明：'),
+    (r'身[分份]證', '身分證'),
+    (r'Ｏ', 'O'), (r'ｏ', 'o'),
+    (r'０', '0'), (r'１', '1'), (r'Ｂ', 'B'), (r'８', '8'),
+]
+
+def normalize_text(text: str) -> str:
+    """OCR 文正規化"""
+    t = text.replace('\ufeff', '')
+    t = unicodedata.normalize('NFC', t)
+    t = to_halfwidth(t)
+    t = t.replace('﹕', '：').replace('︰', '：').replace('⦂', '：')
+    t = t.replace('–', '-').replace('—', '-')
+    t = re.sub(r'[ \u00A0]+', ' ', t)  # 合併多空白
+    for pat, rep in OCR_FIXES:
+        t = re.sub(pat, rep, t)
+    t = '\n'.join(line.rstrip() for line in t.splitlines())
+    return t.strip()
+
+# ===================== 2️⃣ 分段 =====================
+
+PAT_MAIN = re.compile(r'主\s*旨\s*[：:]', re.IGNORECASE)
+PAT_DESC = re.compile(r'說\s*明\s*[：:]', re.IGNORECASE)
+
+def split_sections(text: str):
     """
-    s = to_halfwidth(s)
-    s = s.replace("\r\n", "\n").replace("\r", "\n")  # FIX
-    lines = s.split("\n")
-    lines = [re.sub(r"[ \t\u3000]+", " ", line) for line in lines]
-    return lines
+    輸入：正規化後全文
+    輸出：dict 內含三段
+    """
+    m_main = PAT_MAIN.search(text)
+    m_desc = PAT_DESC.search(text, m_main.end() if m_main else 0)
 
-# NEW: compact OCR-noisy tokens like 'A 1 2 3 . 4 5 6 7 8 9' -> 'A123456789'
-_RE_OCR_GAPS = re.compile(r"[ \u3000\.\-_/]+")
+    if not m_main and not m_desc:
+        return {'before_main': text, 'main_to_desc': '', 'after_desc': ''}
 
-def compact_ocr_noise(s: str) -> str:
-    return _RE_OCR_GAPS.sub("", s)
+    if m_main and not m_desc:
+        return {
+            'before_main': text[:m_main.start()],
+            'main_to_desc': text[m_main.end():],
+            'after_desc': ''
+        }
 
-# FIX: ID regex to also match spaced/dotted variants, later compact
-RE_ID_TW_FUZZY = re.compile(r"[A-Z][\s.\-_/]*?(?:\d[\s.\-_/]*?){9}")
-RE_ID_ARC_FUZZY = re.compile(r"[A-Z][\s.\-_/]*?[A-Z][\s.\-_/]*?(?:\d[\s.\-_/]*?){8}")
+    if not m_main and m_desc:
+        return {
+            'before_main': text[:m_desc.start()],
+            'main_to_desc': '',
+            'after_desc': text[m_desc.end():]
+        }
 
-def tw_id_checksum_ok(code: str) -> bool:
-    code = compact_ocr_noise(code).upper()  # FIX normalize first
-    if not RE_ID_TW.fullmatch(code):
-        return False
-    n = LETTER_MAP.get(code[0])
-    if n is None:
-        return False
-    a, b = divmod(n, 10)
-    digits = [a, b] + [int(x) for x in code[1:]]
-    return sum(d*w for d, w in zip(digits, WEIGHTS_TW_ID)) % 10 == 0
+    return {
+        'before_main': text[:m_main.start()],
+        'main_to_desc': text[m_main.end():m_desc.start()],
+        'after_desc': text[m_desc.end():]
+    }
 
-def arc_id_like(code: str) -> bool:
-    code = compact_ocr_noise(code).upper()  # FIX normalize first
-    return RE_ID_ARC.fullmatch(code) is not None
+# ===================== 3️⃣ jieba 分詞 =====================
 
-# NEW: context blacklist around non-person zones (減少姓名誤擊)
-CONTEXT_BLACKLIST_NEAR = NAME_BLACKLIST_NEAR | {"傳真", "電話", "TEL", "FAX", "E-MAIL", "Email", "住址", "地址"}
-
-# FIX: name extractor now supports 1–3 given-name chars + honorific stripping
-def name_candidates_from_text(line_text: str, surname_singles: Set[str], surname_doubles: Set[str]) -> List[Tuple[str, int]]:
-    cands: List[Tuple[str,int]] = []
-    text = line_text
-    n = len(text)
-    sep_set = set(NAME_SEPARATORS)
-
-    def strip_honorific_after(end_idx: int) -> int:
-        # 跳過空白/中點後若連著敬稱，返回敬稱前位置
-        j = end_idx
-        while j < n and text[j] in sep_set:
-            j += 1
-        for hon in HONORIFICS:
-            L = len(hon)
-            if j + L <= n and text[j:j+L] == hon:
-                return j  # 砍掉敬稱
-        return end_idx
-
-    # 嘗試取 1..3 個給名：偏好 2，再 3，再 1（台灣最常見 2）
-    def next_given_after(start: int) -> List[Tuple[str, int]]:
-        j = start
-        while j < n and text[j] in sep_set:
-            j += 1
-        taken = []
-        pos = j
-        while j < n and len(taken) < NAME_GIVEN_MAX:
-            ch = text[j]
-            if RE_CJK.fullmatch(ch):
-                taken.append(ch); j += 1
-            elif text[j] in sep_set:
-                j += 1
-            else:
-                break
-        outs: List[Tuple[str,int]] = []
-        for L in (2, 3, 1):  # 偏好順序
-            if NAME_GIVEN_MIN <= L <= len(taken):
-                end = pos
-                # 找到第 L 個 CJK 的實際終點
-                cnt, k = 0, pos
-                while k < j and cnt < L:
-                    if RE_CJK.fullmatch(text[k]): cnt += 1
-                    k += 1
-                end = k
-                end = strip_honorific_after(end)
-                g = "".join(taken[:L])
-                if g and g not in BIGRAM_BLACKLIST:
-                    outs.append((g, pos, end))
-        return outs
-
-    doubles_sorted = sorted(surname_doubles, key=len, reverse=True)
-    for i in range(n):
-        matched = False
-        # 先嘗試複姓
-        for ds in doubles_sorted:
-            L = len(ds)
-            if i + L <= n and text[i:i+L] == ds:
-                for g, pos, end in next_given_after(i + L):
-                    name = ds + g
-                    cands.append((name, i))
-                matched = True
-                break
-        if matched:
+def tokenize_sections(sections: dict):
+    """
+    對三段文字進行 jieba 分詞，回傳 dict
+    """
+    tokenized = {}
+    for key, value in sections.items():
+        if not value.strip():
+            tokenized[key] = []
             continue
-        # 再試單姓
-        ch = text[i]
-        if ch in surname_singles:
-            for g, pos, end in next_given_after(i + 1):
-                name = ch + g
-                cands.append((name, i))
-    return cands
+        # 精確模式，保留標點以利規則抽取
+        tokens = [tok for tok in jieba.cut(value, cut_all=False)]
+        tokenized[key] = tokens
+    return tokenized
 
-# FIX: 在 find_field_candidates_around_label 裡替換 ID 的尋找與正規化
-# 片段（僅示意其中一處，左右/下方三個區塊都同理替換）
-# 原本:
-# for m in re.finditer(r"[A-Z][0-9]{9}|[A-Z]{2}[0-9]{8}", right_seg):
-# 改為：
-for m in re.finditer(f"(?:{RE_ID_TW_FUZZY.pattern})|(?:{RE_ID_ARC_FUZZY.pattern})", right_seg):
-    raw = m.group(0)
-    code = compact_ocr_noise(raw).upper()
-    fmt = 1.0 if tw_id_checksum_ok(code) or arc_id_like(code) else 0.5
-    add_candidate(code, label.col + m.start(), label.line, "same_right", fmt)
+# ===================== 4️⃣ 主流程 =====================
 
-# NEW: 降噪懲罰（在 add_candidate 之前或之後套用）
-def penalize_non_person_context(value: str, line_text: str) -> float:
-    ctx = line_text
-    for bad in CONTEXT_BLACKLIST_NEAR:
-        if bad in ctx:
-            return 0.15  # 懲罰
-    return 0.0
-# 使用：cand.penalty += penalize_non_person_context(value, lines[line])
+def preprocess_and_segment(text: str):
+    norm = normalize_text(text)
+    secs = split_sections(norm)
+    toks = tokenize_sections(secs)
+    return {'normalized': norm, 'sections': secs, 'tokens': toks}
+
+# ===================== 示範 =====================
+
+if __name__ == "__main__":
+    sample = """
+    受文者：全球人壽保險股份有限公司
+    主    旨 ： 關於 貴公司 XXX 保單資料 ，請 查照。
+    說    明：一、依 ○○○ 函。
+             二、檢附清單乙份。
+    """
+    out = preprocess_and_segment(sample)
+
+    print("====== 正規化後全文 ======")
+    print(out['normalized'])
+    print("\n====== 三段切分 ======")
+    for k, v in out['sections'].items():
+        print(f"[{k}]\n{v}\n")
+    print("====== jieba 分詞結果（main_to_desc 範例）======")
+    print(out['tokens']['main_to_desc'])
