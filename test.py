@@ -1,108 +1,52 @@
-import re
+# ===== (Optional) spaCy PERSON gate for names =====
+USE_SPACY_PERSON = True           # ← 只要改成 False 就會停用 PERSON 過濾
+SPACY_MODEL = "zh_core_web_sm"    # 建議：zh_core_web_trf 準確度更高但較慢
 
-# 1) 兩字姓（完整表）
-DOUBLE_SURNAMES = {
-    '歐陽','司馬','上官','諸葛','夏侯','皇甫','赫連','軒轅','東方','宇文','長孫','慕容',
-    '司徒','司空','南宮','申屠','公孫','公羊','公冶','公良','宗政','濮陽','太叔','端木',
-    '獨孤','聞人','納蘭','王孫','呼延','澹臺','夾谷','梁丘','第五','仲孫','鐘離','鮮於',
-    '費莫','慶忌','谷梁','微生','羊舌','段干','百里','東門','西門','南門','北堂','南宮',
-    '尉遲','仉督','子車','司寇','申公','羊角','公輸','公叔','公仲','公皙','公門'
-}
+_SPACY_NLP = None  # lazy init
+def _init_spacy():
+    global _SPACY_NLP
+    if not USE_SPACY_PERSON:
+        return None
+    if _SPACY_NLP is not None:
+        return _SPACY_NLP
+    try:
+        import spacy
+        _SPACY_NLP = spacy.load(SPACY_MODEL)
+    except Exception:
+        _SPACY_NLP = None
+    return _SPACY_NLP
 
-# 2) 一字姓（常見 + 台灣常見姓氏，建議完整表）
-SINGLE_SURNAMES = {
-    '趙','錢','孫','李','周','吳','鄭','王','馮','陳','褚','衛','蔣','沈','韓','楊','朱','秦','尤','許',
-    '何','呂','施','張','孔','曹','嚴','華','金','魏','陶','姜','戚','謝','鄒','喻','柏','水','竇','章',
-    '雲','蘇','潘','葛','奚','范','彭','郎','魯','韋','昌','馬','苗','鳳','花','方','俞','任','袁','柳',
-    '鮑','史','唐','費','廉','岑','薛','雷','賀','倪','湯','滕','殷','羅','畢','郝','鄔','安','常','樂',
-    '於','時','傅','皮','卞','齊','康','伍','余','元','卜','顧','孟','平','黃','和','蕭','尹','姚','邵',
-    '湛','汪','祁','毛','禹','狄','米','貝','明','臧','計','伏','成','戴','談','宋','茅','龐','熊','紀',
-    '舒','屈','項','祝','董','梁','杜','阮','藍','閔','席','季','麻','強','賈','路','婁','危','江','童',
-    '顏','郭','梅','盛','林','刁','鐘','徐','邱','駱','高','夏','蔡','田','樊','胡','凌','霍','虞','萬',
-    '支','柯','管','盧','莫','經','房','裘','繆','解','應','宗','丁','宣','賁','鄧','郁','單','杭','洪',
-    '包','諸','左','石','崔','吉','龔','程','嵇','邢','滑','裴','陸','榮','翁','荀','羊','於','甄','曲',
-    '家','封','芮','羿','儲','靳','汲','邴','糜','松','井','段','富','巫','烏','焦','巴','弓','牧','隗',
-    '山','谷','車','侯','宓','蓬','全','郗','班','仰','秋','仲','伊','宮','寧','仇','欒','暴','甘','鈄',
-    '歷','戎','祖','武','符','劉','景','詹','束','龍','葉','幸','司','韶','郜','黎','薊','薄','印','宿',
-    '白','懷','蒲','邰','從','鄂','索','咸','籍','賴','卓','屠','蒙','池','喬','陰','鬱','胥','能','蒼',
-    '雙','聞','莘','黨','翟','譚','貢','勞','逄','姬','申','扶','堵','冉','宰','郦','雍','卻','璩','桑',
-    '桂','濮','牛','壽','通','邊','扈','燕','冀','郟','浦','尚','農','溫','莊','晏','柴','瞿','閻','充',
-    '慕','連','茹','習','宦','艾','魚','容','向','古','易','慎','戈','廖','庾','終','暨','居','衡','步',
-    '都','耿','滿','弘','匡','國','文','寇','廣','祿','闕','東','歐','殳','沃','利','蔚','越','夔','隆',
-    '師','鞏','厙','聶','晁','勾','敖','融','冷','訾','辛','闞','那','簡','饒','曾','鞠','鄂','桑','尉',
-    '程','賈','賴','葉','黃','廖','彭','許','謝','蔡','鄭','林','劉'
-}
-
-TITLES = {'先生','小姐','女士','君','同學','股長','經理','主任','科長','課長','先生：','小姐：','女士：'}
-STOP_CHARS = set('，,。.;；：:（）()《》〈〉「」『』[]【】、 \t\n')
-
-def _is_cjk(ch: str) -> bool:
-    o = ord(ch)
-    return (0x4E00 <= o <= 0x9FFF) or (0x3400 <= o <= 0x4DBF) or (0xF900 <= o <= 0xFAFF) or (o == 0x3007)
-
-def find_name_candidates_from_window(window: str) -> list[tuple[str,int]]:
+def build_person_index(lines: List[str]):
     """
-    從標籤右側視窗抓姓名候選（回傳 (name, offset_in_window)）
-    規則：
-      - 先試兩字姓，後試一字姓
-      - 名取 1–2 字（總長 2–4）
-      - 左右以標點或邊界切分
-      - 去除尾隨稱謂
+    把每一行跑過 spaCy，蒐集 PERSON span 供快速比對。
+    回傳: { line_index: [(start_col, end_col)] }
     """
-    cands=[]
-    n=len(window)
-    i=0
-    while i < n:
-        # 跳過非中文
-        if not _is_cjk(window[i]):
-            i += 1; continue
+    nlp = _init_spacy()
+    if nlp is None:
+        return {}
+    idx: Dict[int, List[Tuple[int,int]]] = {}
+    for li, line in enumerate(lines):
+        doc = nlp(line)
+        spans = []
+        for ent in getattr(doc, "ents", []):
+            # 僅收 PERSON
+            if getattr(ent, "label_", "") == "PERSON":
+                spans.append((ent.start_char, ent.end_char))
+        if spans:
+            idx[li] = spans
+    return idx
 
-        # 先兩字姓
-        hit_surname = None
-        sx = 0
-        if i+2 <= n and window[i:i+2] in DOUBLE_SURNAMES:
-            hit_surname = window[i:i+2]; sx = 2
-        elif window[i] in SINGLE_SURNAMES:
-            hit_surname = window[i]; sx = 1
+def _overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
+    return not (a_end <= b_start or b_end <= a_start)
 
-        if hit_surname:
-            # 名 1~2 字
-            for gx in (2,1):
-                j = i + sx + gx
-                if j <= n and all(_is_cjk(ch) for ch in window[i+sx:j]):
-                    name = window[i:j]
-                    # 邊界檢查
-                    prev_ok = (i==0) or (window[i-1] in STOP_CHARS)
-                    next_ok = (j==n) or (window[j] in STOP_CHARS)
-                    if not (prev_ok and next_ok): 
-                        continue
-                    # 剔除稱謂
-                    base = name
-                    for t in TITLES:
-                        if base.endswith(t) and 2 <= len(base[:-len(t)]) <= 4:
-                            base = base[:-len(t)]
-                    # 長度限制
-                    if 2 <= len(base) <= 4:
-                        cands.append((base, i))
-        i += 1
-
-    # 去重：同起點取最長
-    cands.sort(key=lambda x: (x[1], -len(x[0])))
-    out=[]; used=set()
-    for nm, off in cands:
-        if off not in used:
-            out.append((nm, off)); used.add(off)
-    return out
-
-def pick_best_name(label_windows: list[dict]) -> str:
-    """距離 + 長度偏好 + 複姓優先權加分"""
-    best, best_score = '', -1e9
-    for rank, item in enumerate(label_windows):
-        win = item['window']
-        for name, off in find_name_candidates_from_window(win):
-            len_bonus = {2:0.8, 3:1.0, 4:0.7}.get(len(name), 0.5)
-            surname2_bonus = 0.6 if name[:2] in DOUBLE_SURNAMES else 0.0
-            score = 120/(1+off) + 6*len_bonus + 3*surname2_bonus + 2*(len(label_windows)-rank)
-            if score > best_score:
-                best, best_score = name, score
-    return best
+def is_person_span(person_index: Dict[int, List[Tuple[int,int]]], line: int, start: int, end: int) -> bool:
+    """
+    判斷 (line, start, end) 這個片段是否與 spaCy 的 PERSON span 有交集
+    """
+    spans = person_index.get(line)
+    if not spans:
+        return False
+    for s, e in spans:
+        if _overlap(start, end, s, e):
+            return True
+    return False
