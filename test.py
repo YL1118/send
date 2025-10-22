@@ -1,52 +1,41 @@
-# ===== (Optional) spaCy PERSON gate for names =====
-USE_SPACY_PERSON = True           # ← 只要改成 False 就會停用 PERSON 過濾
-SPACY_MODEL = "zh_core_web_sm"    # 建議：zh_core_web_trf 準確度更高但較慢
-
-_SPACY_NLP = None  # lazy init
-def _init_spacy():
-    global _SPACY_NLP
-    if not USE_SPACY_PERSON:
-        return None
-    if _SPACY_NLP is not None:
-        return _SPACY_NLP
-    try:
-        import spacy
-        _SPACY_NLP = spacy.load(SPACY_MODEL)
-    except Exception:
-        _SPACY_NLP = None
-    return _SPACY_NLP
-
-def build_person_index(lines: List[str]):
+def name_candidates_from_text(
+    line_text: str,
+    surname_singles: Set[str],
+    surname_doubles: Set[str],
+    *,
+    line_idx: int,
+    person_index: Dict[int, List[Tuple[int,int]]]
+) -> List[Tuple[str, int]]:
+    """Return list of (name, col) candidates found in a line using surname rules,
+       並且（若啟用且有模型）必須與 spaCy PERSON span 有重疊才通過。
     """
-    把每一行跑過 spaCy，蒐集 PERSON span 供快速比對。
-    回傳: { line_index: [(start_col, end_col)] }
-    """
-    nlp = _init_spacy()
-    if nlp is None:
-        return {}
-    idx: Dict[int, List[Tuple[int,int]]] = {}
-    for li, line in enumerate(lines):
-        doc = nlp(line)
-        spans = []
-        for ent in getattr(doc, "ents", []):
-            # 僅收 PERSON
-            if getattr(ent, "label_", "") == "PERSON":
-                spans.append((ent.start_char, ent.end_char))
-        if spans:
-            idx[li] = spans
-    return idx
+    cands: List[Tuple[str,int]] = []
+    for m in re.finditer(rf"[{CJK_RANGE}{NAME_SEPARATORS}]{{2,6}}", line_text):
+        frag = m.group(0)
+        matched = None
+        # 先嘗試複姓
+        for ds in sorted(surname_doubles, key=len, reverse=True):
+            if frag.startswith(ds):
+                rest = frag[len(ds):]
+                rest = rest.lstrip(NAME_SEPARATORS)
+                if  NAME_GIVEN_MIN <= len(rest) <= NAME_GIVEN_MAX and is_cjk(rest):
+                    matched = ds + rest
+                    break
+        if not matched and frag:
+            # 再試單姓
+            sur = frag[0]
+            if sur in surname_singles:
+                rest = frag[1:]
+                rest = rest.lstrip(NAME_SEPARATORS)
+                if NAME_GIVEN_MIN <= len(rest) <= NAME_GIVEN_MAX and is_cjk(rest):
+                    matched = sur + rest
 
-def _overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
-    return not (a_end <= b_start or b_end <= a_start)
-
-def is_person_span(person_index: Dict[int, List[Tuple[int,int]]], line: int, start: int, end: int) -> bool:
-    """
-    判斷 (line, start, end) 這個片段是否與 spaCy 的 PERSON span 有交集
-    """
-    spans = person_index.get(line)
-    if not spans:
-        return False
-    for s, e in spans:
-        if _overlap(start, end, s, e):
-            return True
-    return False
+        if matched:
+            start = m.start()
+            end = m.end()
+            # ---- PERSON gate: 需要跟 spaCy PERSON 有重疊才收進候選 ----
+            if USE_SPACY_PERSON and person_index:
+                if not is_person_span(person_index, line_idx, start, end):
+                    continue
+            cands.append((matched, start))
+    return cands
