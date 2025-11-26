@@ -1,9 +1,13 @@
-from fastapi import FastAPI
-from api.routes_health import router as health_router
-from api.routes_algorithm import router as algo_router
+from fastapi import APIRouter, HTTPException
+from schemas.algorithm_schema import AlgoInput, AlgoOutput
+from core.logic import compute_result
 
-app = FastAPI(title="Generic Python API Framework")
+router = APIRouter()
 
-# 註冊所有 routes
-app.include_router(health_router, prefix="/health")
-app.include_router(algo_router, prefix="/algorithm")
+@router.post("/run", response_model=AlgoOutput)
+def run_algorithm(payload: AlgoInput):
+    try:
+        result = compute_result(payload.x, payload.y)
+        return AlgoOutput(result=result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
